@@ -2,7 +2,7 @@
   <div class="music">
     <div class="music-content">
       <div class="music-left">
-        <music-btn />
+        <music-btn @onClickLyric="handleOpenLyric" />
         <keep-alive>
           <router-view v-if="$route.meta.keepAlive" class="music-list" />
         </keep-alive>
@@ -12,16 +12,22 @@
           class="music-list"
         />
       </div>
-      <lyric
-        class="music-right"
-        :lyric="lyric"
-        :nolyric="nolyric"
-        :lyric-index="lyricIndex"
-      />
+      <div class="music-right" :class="{ show: lyricVisible }">
+        <div class="close-lyric" @click="handleCloseLyric">关闭歌词</div>
+        <lyric
+          ref="lyric"
+          :lyric="lyric"
+          :nolyric="nolyric"
+          :lyric-index="lyricIndex"
+        />
+      </div>
     </div>
 
     <!--播放器-->
-    <div class="music-bar" :class="{disable:!musicReady||!currentMusic.id}">
+    <div
+      class="music-bar"
+      :class="{ disable: !musicReady || !currentMusic.id }"
+    >
       <div class="music-bar-btns">
         <mm-icon
           class="pointer"
@@ -47,21 +53,21 @@
       </div>
       <div class="music-music">
         <div class="music-bar-info">
-          <template v-if="currentMusic&&currentMusic.id">
+          <template v-if="currentMusic && currentMusic.id">
             {{ currentMusic.name }}
             <span>- {{ currentMusic.singer }}</span>
           </template>
           <template v-else>欢迎使用mmPlayer在线音乐播放器</template>
         </div>
-        <div
-          v-if="currentMusic.id"
-          class="music-bar-time"
-        >{{ currentTime | format }}/{{ (currentMusic.duration % 3600) | format }}</div>
+        <div v-if="currentMusic.id" class="music-bar-time">
+          {{ currentTime | format }}/{{ currentMusic.duration % 3600 | format }}
+        </div>
         <mm-progress
           class="music-progress"
           :percent="percentMusic"
           :percent-progress="currentProgress"
           @percentChange="progressMusic"
+          @percentChangeEnd="progressMusicEnd"
         />
       </div>
 
@@ -89,7 +95,7 @@
     </div>
 
     <!--遮罩-->
-    <div class="mmPlayer-bg" :style="{backgroundImage: picUrl}"></div>
+    <div class="mmPlayer-bg" :style="{ backgroundImage: picUrl }"></div>
     <div class="mmPlayer-mask"></div>
   </div>
 </template>
@@ -97,7 +103,12 @@
 <script>
 import { getLyric } from 'api'
 import mmPlayerMusic from './mmPlayer'
-import { randomSortArray, parseLyric, format } from '@/utils/util'
+import {
+  randomSortArray,
+  parseLyric,
+  format,
+  silencePromise
+} from '@/utils/util'
 import { playMode, defaultBG } from '@/config'
 import { getVolume, setVolume } from '@/utils/storage'
 import { mapGetters, mapMutations, mapActions } from 'vuex'
@@ -125,6 +136,7 @@ export default {
       musicReady: false, // 是否可以使用播放器
       currentTime: 0, // 当前播放时间
       currentProgress: 0, // 当前缓冲进度
+      lyricVisible: false, // 移动端歌词显示
       lyric: [], // 歌词
       nolyric: false, // 是否有歌词
       lyricIndex: 0, // 当前播放歌词下标
@@ -165,7 +177,7 @@ export default {
       this.audioEle.src = newMusic.url
       // 重置相关参数
       this.lyricIndex = this.currentTime = this.currentProgress = 0
-      this.audioEle.play()
+      silencePromise(this.audioEle.play())
       this.$nextTick(() => {
         this._getLyric(newMusic.id)
       })
@@ -173,7 +185,7 @@ export default {
     playing(newPlaying) {
       const audio = this.audioEle
       this.$nextTick(() => {
-        newPlaying ? audio.play() : audio.pause()
+        newPlaying ? silencePromise(audio.play()) : audio.pause()
         this.musicReady = true
       })
     },
@@ -188,6 +200,9 @@ export default {
         }
       }
       this.lyricIndex = lyricIndex
+    },
+    $route() {
+      this.lyricVisible = false
     }
   },
   mounted() {
@@ -258,23 +273,27 @@ export default {
       this.setPlaying(!this.playing)
     },
     // 下一曲
-    next() {
+    // 当 flag 为 true 时，表示上一曲播放失败
+    next(flag = false) {
       if (!this.musicReady) {
         return
       }
+      const {
+        playlist: { length }
+      } = this
       if (
-        this.playlist.length - 1 === this.currentIndex &&
-        this.mode === playMode.order
+        (length - 1 === this.currentIndex && this.mode === playMode.order) ||
+        (length === 1 && flag)
       ) {
         this.setCurrentIndex(-1)
         this.setPlaying(false)
         return
       }
-      if (this.playlist.length === 1) {
+      if (length === 1) {
         this.loop()
       } else {
         let index = this.currentIndex + 1
-        if (index === this.playlist.length) {
+        if (index === length) {
           index = 0
         }
         if (!this.playing && this.musicReady) {
@@ -287,14 +306,18 @@ export default {
     // 循环
     loop() {
       this.audioEle.currentTime = 0
-      this.audioEle.play()
+      silencePromise(this.audioEle.play())
       this.setPlaying(true)
       if (this.lyric.length > 0) {
         this.lyricIndex = 0
       }
     },
-    // 修改音乐进度
+    // 修改音乐显示时长
     progressMusic(percent) {
+      this.currentTime = this.currentMusic.duration * percent
+    },
+    // 修改音乐进度
+    progressMusicEnd(percent) {
       this.audioEle.currentTime = this.currentMusic.duration * percent
     },
     // 切换播放顺序
@@ -358,18 +381,27 @@ export default {
         [playMode.loop]: `单曲循环 ${key}`
       }[this.mode]
     },
+    // 查看歌词
+    handleOpenLyric() {
+      this.lyricVisible = true
+      this.$nextTick(() => {
+        this.$refs.lyric.clacTop()
+      })
+    },
+    // 关闭歌词
+    handleCloseLyric() {
+      this.lyricVisible = false
+    },
     // 获取歌词
     _getLyric(id) {
       getLyric(id).then(res => {
-        if (res.status === 200) {
-          if (res.data.nolyric) {
-            this.nolyric = true
-          } else {
-            this.nolyric = false
-            this.lyric = parseLyric(res.data.lrc.lyric)
-          }
-          this.audioEle.play()
+        if (res.nolyric) {
+          this.nolyric = true
+        } else {
+          this.nolyric = false
+          this.lyric = parseLyric(res.lrc.lyric)
         }
+        silencePromise(this.audioEle.play())
       })
     },
     ...mapMutations({
@@ -407,6 +439,12 @@ export default {
       position: relative;
       width: 310px;
       margin-left: 10px;
+      .close-lyric {
+        position: absolute;
+        top: 0;
+        z-index: 1;
+        cursor: pointer;
+      }
     }
   }
 
@@ -526,14 +564,25 @@ export default {
     background-position: 50%;
     filter: blur(12px);
     opacity: 0.7;
-    transform: translateZ(0);
     transition: all 0.8s;
+    transform: scale(1.1);
+  }
+
+  @media (min-width: 960px) {
+    .close-lyric {
+      display: none;
+    }
   }
 
   //当屏幕小于960时
   @media (max-width: 960px) {
     .music-right {
       display: none;
+      &.show {
+        display: block;
+        margin-left: 0;
+        width: 100%;
+      }
     }
   }
   //当屏幕小于768时
